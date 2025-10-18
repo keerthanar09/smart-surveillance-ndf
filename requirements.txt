@@ -1,0 +1,15 @@
+ultralytics
+joblib
+opencv-python
+numpy
+scikit-learn
+fastapi
+uvicorn
+python-multipart
+requests
+torch
+torchvision
+pillow
+matplotlib
+dotenv
+google.generativeai

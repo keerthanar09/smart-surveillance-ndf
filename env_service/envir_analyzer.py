@@ -11,7 +11,6 @@ import numpy as np
 from collections import Counter
 import tempfile
 
-# ================== Setup ==================
 app = FastAPI(title="Environment Analysis API")
 
 app.add_middleware(
@@ -22,7 +21,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Shared features and model structure
 features = {
     "weather": ["sunny", "rainy", "snowy", "cloudy"],
     "lighting": ["day", "night", "dim", "bright"],
@@ -46,7 +44,6 @@ class MultiFeatureModel(nn.Module):
         out = {feat: head(x) for feat, head in self.feature_heads.items()}
         return out
 
-# Load model
 model = MultiFeatureModel(models.resnet18(weights=None), features)
 model_path = os.path.join(os.path.dirname(__file__), "multi_feature_model.pth")
 model.load_state_dict(torch.load(model_path, map_location="cpu"))
@@ -59,14 +56,10 @@ transform = transforms.Compose([
                          std=[0.229, 0.224, 0.225])
 ])
 
-# Unified output directory
 outputs_dir = os.path.join(os.path.dirname(__file__), "outputs")
 os.makedirs(outputs_dir, exist_ok=True)
 
-
-# ================== Helper Functions ==================
 def analyze_frame(frame):
-    """Analyze a single image frame using the model."""
     img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
     img_t = transform(img).unsqueeze(0)
     with torch.no_grad():
@@ -76,7 +69,6 @@ def analyze_frame(frame):
 
 
 def aggregate_results(results):
-    """Aggregate predictions across frames."""
     agg = {}
     if not results:
         return agg
@@ -85,25 +77,19 @@ def aggregate_results(results):
         agg[feat] = Counter(feat_values).most_common(1)[0][0]
     return agg
 
-
-# ================== Main Analysis Endpoint ==================
 @app.post("/analyze/")
 async def analyze(file: UploadFile):
-    """Analyze environmental factors in a video — 1 frame every 10 seconds."""
     suffix = os.path.splitext(file.filename)[-1] or ".mp4"
-
-    # Save uploaded file to a real temp path (ensure fully written before reading)
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         while True:
-            chunk = await file.read(1024 * 1024)  # read in chunks (1 MB)
+            chunk = await file.read(1024 * 1024)  
             if not chunk:
                 break
             tmp.write(chunk)
-        tmp.flush()  # ensure data is written
+        tmp.flush()  
         tmp_path = tmp.name
 
     try:
-        # ✅ Check that the file exists and has content
         if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
             raise ValueError(f"Uploaded video file is empty: {tmp_path}")
 
@@ -113,8 +99,8 @@ async def analyze(file: UploadFile):
 
         fps = cap.get(cv2.CAP_PROP_FPS)
         if fps == 0 or np.isnan(fps):
-            fps = 30  # fallback
-        frame_interval = int(fps * 10)  # one frame every 10 seconds
+            fps = 30 
+        frame_interval = int(fps * 10)  
 
         frame_idx = 0
         frame_results = []

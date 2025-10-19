@@ -30,7 +30,7 @@ async def analyze_emotions(file: UploadFile):
     if not cap.isOpened():
         return {"error": "Could not open uploaded video file"}
 
-    frame_skip = 5  # process every 3rd frame
+    frame_skip = 5  # process every 5rd frame (NEED TO CHANGE)
     frame_count = 0
     all_emotions = []
 

@@ -48,12 +48,12 @@ def generate_graphs(data):
     
     env_data = data.get("environment", {})
     env_agg = env_data.get("aggregated_environment", {})
+    env_path = "outputs/graphs/environment_factors.png"
 
     if not env_agg:
         plt.figure()
         plt.text(0.5, 0.5, "No environment data available", ha="center", va="center")
         plt.title("Environment Factor Trends")
-        env_path = "outputs/graphs/environment_factors.png"
         plt.savefig(env_path)
         plt.close()
         graphs["environment_graph"] = env_path
@@ -65,21 +65,17 @@ def generate_graphs(data):
         unique_labels = {val: i for i, val in enumerate(sorted(set(values)))}
         numeric_values = [unique_labels[val] for val in values]
 
-        plt.figure(figsize=(8, 5))
-        bars = plt.bar(factors, numeric_values, color="skyblue")
-        plt.title("Environmental Factors Overview")
-        plt.xlabel("Factors")
-        plt.ylabel("Categories")
+        plt.figure(figsize=(8, 4))
+        plt.axis('off')
+        plt.title("Environmental Factors Overview", fontsize=14, weight='bold')
 
-        # Label bars with actual category names (sunny, day, etc.)
-        for bar, val in zip(bars, values):
-            plt.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.05, val,
-                    ha="center", va="bottom", fontsize=9, rotation=0)
+        for i, (factor, value) in enumerate(env_agg.items()):
+            plt.text(0, 1 - i*0.2, f"{factor.capitalize()}: {value}", fontsize=12)
 
         plt.tight_layout()
-        env_path = "outputs/graphs/environment_factors.png"
-        plt.savefig(env_path)
+        plt.savefig("outputs/graphs/environment_factors.png")
         plt.close()
+
         graphs["environment_graph"] = env_path
 
     # === PLACEHOLDERS FOR FUTURE GRAPHS ===

@@ -26,6 +26,8 @@ app.add_middleware(
 CROWD_URL = "http://127.0.0.1:8100/analyze/" 
 ENV_URL = "http://127.0.0.1:8200/analyze/"
 EMOTION_URL = "http://127.0.0.1:8300/analyze/"
+BODY_URL = "http://127.0.0.1:8400/analyze/"
+
 
 
 @app.post("/process/")
@@ -36,7 +38,8 @@ async def process(file: UploadFile, context: str = Form(...)):
     with open(input_path, "wb") as f:
         f.write(contents)
 
-    # sends the video to be processed by crowdservice
+    # This part will be replaced by something that hopefully maybe uses parallel processing (cuz currently its serial), and
+    # adding RL choose which services to call based on context!
     with open(input_path, "rb") as f:
         files = {"file": (file.filename, f, file.content_type)}
         try:
@@ -45,18 +48,17 @@ async def process(file: UploadFile, context: str = Form(...)):
             environment_resp = requests.post(ENV_URL, files=files, timeout=300).json()
             f.seek(0)
             emotion_resp = requests.post(EMOTION_URL, files=files, timeout=300).json()
+            f.seek(0)
+            posture_resp = requests.post(BODY_URL, files=files, timeout=300).json()
 
 
         except Exception as e:
+            # This needs to be updated cuz what is this logic tsk tsk tsk
             crowd_resp = {"error": f"Crowd service failed: {e}"}
             environment_resp = {"error": f"Environment service failed: {e}"}
             emotion_resp = {"error": f"Emotion service failed: {e}"}
+            posture_resp = {"error": f"Posture service failed: {e}"}
 
-
-    # Placeholders for other services ===
-    # environment_resp = requests.post(ENV_URL, files=files).json()
-    # emotion_resp = requests.post(EMOTION_URL, files=files).json()
-    # posture_resp = requests.post(POSTURE_URL, files=files).json()
 
     combined_output = {
         "timestamp": datetime.now().isoformat(),
@@ -64,21 +66,20 @@ async def process(file: UploadFile, context: str = Form(...)):
         "crowd": crowd_resp,
         "environment": environment_resp,  
         "emotion": emotion_resp,      
-        "posture": None,      
+        "posture": posture_resp,      
     }
 
     json_path = f"outputs/result_{int(time.time())}.json"
     with open(json_path, "w") as f:
         json.dump(combined_output, f, indent=2)
 
-    # Gemini processing
     try:
         gemini_analysis = analyze_with_gemini(combined_output)
         print(gemini_analysis)
     except Exception as e:
         gemini_analysis = {"error": f"Gemini failed: {e}"}
 
-    graphs = generate_graphs(combined_output)  # Save graphs under outputs/
+    graphs = generate_graphs(combined_output) 
     
     # # === Alert ===
     # if "anomaly" in gemini_analysis.get("summary", "").lower():

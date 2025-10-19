@@ -14,3 +14,4 @@ matplotlib
 dotenv
 google.generativeai
 tensorflow
+pandas

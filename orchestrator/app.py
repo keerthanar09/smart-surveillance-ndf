@@ -24,6 +24,9 @@ app.add_middleware(
 
 # These URLs should point to your microservices, and will not be localhost if Docker is used!!!
 CROWD_URL = "http://127.0.0.1:8100/analyze/" 
+ENV_URL = "http://127.0.0.1:8200/analyze/"
+EMOTION_URL = "http://127.0.0.1:8300/analyze/"
+
 
 @app.post("/process/")
 async def process(file: UploadFile, context: str = Form(...)):
@@ -38,8 +41,17 @@ async def process(file: UploadFile, context: str = Form(...)):
         files = {"file": (file.filename, f, file.content_type)}
         try:
             crowd_resp = requests.post(CROWD_URL, files=files, timeout=300).json()
+            f.seek(0)
+            environment_resp = requests.post(ENV_URL, files=files, timeout=300).json()
+            f.seek(0)
+            emotion_resp = requests.post(EMOTION_URL, files=files, timeout=300).json()
+
+
         except Exception as e:
             crowd_resp = {"error": f"Crowd service failed: {e}"}
+            environment_resp = {"error": f"Environment service failed: {e}"}
+            emotion_resp = {"error": f"Emotion service failed: {e}"}
+
 
     # Placeholders for other services ===
     # environment_resp = requests.post(ENV_URL, files=files).json()
@@ -50,8 +62,8 @@ async def process(file: UploadFile, context: str = Form(...)):
         "timestamp": datetime.now().isoformat(),
         "context": context,
         "crowd": crowd_resp,
-        "environment": None,  
-        "emotion": None,      
+        "environment": environment_resp,  
+        "emotion": emotion_resp,      
         "posture": None,      
     }
 

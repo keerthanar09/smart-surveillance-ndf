@@ -8,6 +8,7 @@ export default function Home() {
   const [context, setContext] = useState("");
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [summary, setSummary] = useState("");
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -27,7 +28,9 @@ export default function Home() {
         body: formData,
       });
       const data = await res.json();
-      console.log(data);
+      setSummary(data.gemini || "");
+      console.log("Summary:", summary);
+      console.log("data:", data);
       setResult(data);
     } catch (err) {
       alert("Backend connection failed!");
@@ -80,6 +83,23 @@ export default function Home() {
               width={600}
               height={400}
             />
+            
+          )}
+          {result.graphs?.environment_graph && (
+            <Image
+              src={`http://127.0.0.1:8000/${result.graphs.environment_graph}`}
+              alt="Environment Graph"
+              className="mt-4 rounded-md"
+              width={600}
+              height={400}
+            />
+            
+          )}
+          {summary && (
+            <div className="mt-4 p-4 bg-blue-800 rounded-md">
+              <h3 className="text-lg font-semibold mb-2 text-white">Summary</h3>
+              <p>{JSON.stringify(summary, null, 2)}</p>
+            </div>
           )}
           <pre>{JSON.stringify(result, null, 2)}</pre>
           

@@ -13,3 +13,4 @@ pillow
 matplotlib
 dotenv
 google.generativeai
+tensorflow

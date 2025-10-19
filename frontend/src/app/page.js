@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Image from "next/image";
+import ReactMarkdown from "react-markdown";
 
 export default function Home() {
   const [file, setFile] = useState(null);
@@ -98,10 +99,10 @@ export default function Home() {
           {summary && (
             <div className="mt-4 p-4 bg-blue-800 rounded-md">
               <h3 className="text-lg font-semibold mb-2 text-white">Summary</h3>
-              <p>{JSON.stringify(summary, null, 2)}</p>
+              <ReactMarkdown>{summary.summary}</ReactMarkdown>
             </div>
           )}
-          <pre>{JSON.stringify(result, null, 2)}</pre>
+          {/* <pre>{JSON.stringify(result, null, 2)}</pre> */}
           
         </div>
       )}

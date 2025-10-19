@@ -12,9 +12,9 @@ genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 def analyze_with_gemini(results):
     prompt = f"""
-    You are an AI analysis system.
+    You are an AI analysis system working to provide insights on data collected from surveillance video analysis.
     Summarize the crowd, emotion, posture, and environment data below into concise insights.
-    Explain correlations, trends, and possible causes in human terms.
+    Explain correlations, trends, and possible causes in human terms. Provide everything in bullet points, and make the response readable.
     Data: {json.dumps(results, indent=2)}
     """
     model = genai.GenerativeModel("models/gemini-2.5-flash")

@@ -40,6 +40,33 @@ export default function Home() {
       setLoading(false);
     }
   };
+  const GraphSection = ({ title, graph }) => {
+    const [expanded, setExpanded] = useState(false);
+    if (!graph?.path) return null;
+    return (
+      <div className="mt-6 bg-gray-800 p-4 rounded-xl">
+        <h3 className="text-white text-lg font-semibold mb-2">{title}</h3>
+        <Image
+          src={`http://127.0.0.1:8000/${graph.path}`}
+          alt={title}
+          width={600}
+          height={400}
+          className="rounded-md"
+        />
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="mt-3 bg-black text-blue-400 px-3 py-1 rounded-md hover:bg-blue-700 transition"
+        >
+          {expanded ? "Hide Explanation" : "Show Explanation"}
+        </button>
+        {expanded && (
+          <div className="mt-2 bg-blue-900 p-3 rounded-md text-white">
+            {graph.explanation || "No explanation available."}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <main className="min-h-screen flex flex-col items-center justify-center bg-blue-900 p-8">
@@ -74,9 +101,9 @@ export default function Home() {
       </form>
 
       {result && (
-        <div className="mt-8 bg-gray-900 text-blue-300 p-4 rounded-lg w-full max-w-3xl overflow-x-auto">
+        <div className="mt-8 bg-gray-900 text-blue-300 p-4 rounded-lg w-full max-w-screen overflow-x-auto">
           <h2 className="text-xl mb-2 text-white">Analysis Result</h2>
-          {result.graphs?.crowd_graph && (
+          {/* {result.graphs?.crowd_graph && (
             <Image
               src={`http://127.0.0.1:8000/${result.graphs.crowd_graph}`}
               alt="Crowd Graph"
@@ -84,17 +111,26 @@ export default function Home() {
               width={600}
               height={400}
             />
-            
-          )}
-          {result.graphs?.environment_graph && (
-            <Image
-              src={`http://127.0.0.1:8000/${result.graphs.environment_graph}`}
-              alt="Environment Graph"
-              className="mt-4 rounded-md"
-              width={600}
-              height={400}
-            />
-            
+          )} */}
+          {result?.graphs && (
+            <div className="mt-8 w-full max-w-4xl">
+              <GraphSection
+                title="Crowd Activity"
+                graph={result.graphs.crowd_graph}
+              />
+              <GraphSection
+                title="Environment"
+                graph={result.graphs.environment_graph}
+              />
+              <GraphSection
+                title="Emotion Distribution"
+                graph={result.graphs.emotion_graph}
+              />
+              <GraphSection
+                title="Posture & Body Language"
+                graph={result.graphs.posture_graph}
+              />
+            </div>
           )}
           {summary && (
             <div className="mt-4 p-4 bg-blue-800 rounded-md">
@@ -103,7 +139,6 @@ export default function Home() {
             </div>
           )}
           {/* <pre>{JSON.stringify(result, null, 2)}</pre> */}
-          
         </div>
       )}
     </main>

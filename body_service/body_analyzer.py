@@ -83,7 +83,7 @@ async def analyze(file: UploadFile):
         fps = cap.get(cv2.CAP_PROP_FPS)
         if fps == 0 or np.isnan(fps):
             fps = 30
-        frame_interval = int(fps * 5)  # one frame every 5 seconds
+        frame_interval = int(fps * 3000)  # one frame every 2 minutes-ish. Needs to be changed when the model is optimized.
 
         frame_idx = 0
         frame_results = []

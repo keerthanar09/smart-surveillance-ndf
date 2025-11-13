@@ -1,126 +1,186 @@
+# posture_service/app.py
+import os
+import cv2
+import json
+import joblib
+import numpy as np
+import tensorflow as tf
+import traceback
 from fastapi import FastAPI, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
-import pandas as pd
-import joblib
-import cv2
-import json
-import tempfile
-import os
-import numpy as np
+from pydantic import BaseModel
 
-app = FastAPI(title="Body Posture and Language Analysis API")
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-BASE_DIR = os.path.dirname(__file__)
-posture_model = joblib.load(os.path.join(BASE_DIR, "posture_rf_model.pkl"))
-bodylang_model = joblib.load(os.path.join(BASE_DIR, "body_language_rf_model.pkl"))
-yolo_model = YOLO("yolov8n-pose.pt")
+BASE = "./models"   
+POSTURE_PATHS = [
+    "posture_rf_model.pkl",
+    "posture_model.pkl",
+    "posture_model_converted.h5",
+    "fine_tuned_posture_model.h5",
+    "posture_model.h5"
+]
 
-feature_cols = ['torso_angle_deg', 'head_angle_deg', 'left_knee_angle_deg', 'right_knee_angle_deg']
+BODY_PATHS = [
+    "body_language_rf_model.pkl",
+    "body_language_model.pkl",
+    "body_language_model.h5"
+]
 
-outputs_dir = os.path.join(BASE_DIR, "outputs")
-os.makedirs(outputs_dir, exist_ok=True)
+def load_first_available(paths):
+    for p in paths:
+        full = os.path.join(BASE, p)
+        if os.path.exists(full):
+            try:
+                if full.endswith(".pkl") or full.endswith(".joblib"):
+                    m = joblib.load(full)
+                    return m, "sklearn"
+                if full.endswith(".h5") or full.endswith(".keras"):
+                    m = tf.keras.models.load_model(full)
+                    return m, "keras"
+            except Exception:
+                traceback.print_exc()
+                continue
+    return None, None
 
-def extract_features_from_keypoints(kpts):
+posture_model, posture_type = load_first_available(POSTURE_PATHS)
+body_model, body_type = load_first_available(BODY_PATHS)
+
+print("✅ Loaded Posture model:", posture_type)
+print("✅ Loaded Body model:", body_type)
+
+yolo = YOLO("yolov8n-pose.pt")
+
+POSTURE_CLASSES = ['bent_forward','crouching','slight_lean','slouching','upright']
+BODY_CLASSES = ['normal','gesturing','aggressive','defensive']
+
+def extract_8_features_from_kps(kps):
+    kp = np.array(kps)
+    xy = kp[:, :2] if kp.shape[-1] >= 2 else kp
+
+    def g(i):
+        return xy[i] if 0 <= i < len(xy) else None
+
+    nose = g(0)
+    left_eye = g(1)
+    left_ear = g(3)
+    left_shoulder = g(5)
+    right_shoulder = g(6)
+    left_hip = g(11)
+    right_hip = g(12)
+    left_knee = g(13)
+    right_knee = g(14)
+    left_ankle = g(15)
+    right_ankle = g(16)
+    left_wrist = g(9)
+    right_wrist = g(10)
+
+    def angle(a,b,c):
+        if a is None or b is None or c is None: return 0.0
+        a,b,c = np.array(a), np.array(b), np.array(c)
+        ba = a - b
+        bc = c - b
+        denom = np.linalg.norm(ba)*np.linalg.norm(bc)
+        if denom == 0: return 0.0
+        cosang = np.dot(ba, bc)/denom
+        cosang = np.clip(cosang, -1, 1)
+        return float(np.degrees(np.arccos(cosang)))
 
     return {
-        'torso_angle_deg': 100.0,
-        'head_angle_deg': 90.0,
-        'left_knee_angle_deg': 170.0,
-        'right_knee_angle_deg': 175.0
+        "torso_angle_deg": angle(left_shoulder, left_hip, right_hip),
+        "head_angle_deg": angle(left_shoulder, left_ear, left_eye),
+        "left_knee_angle_deg": angle(left_hip, left_knee, left_ankle),
+        "right_knee_angle_deg": angle(right_hip, right_knee, right_ankle),
+        "norm_nose_y": float(nose[1]) if nose is not None else 0,
+        "shoulder_width_norm": float(np.linalg.norm(np.array(left_shoulder)-np.array(right_shoulder))) 
+                               if left_shoulder is not None and right_shoulder is not None else 0,
+        "left_wrist_shoulder_dist": float(np.linalg.norm(np.array(left_wrist)-np.array(left_shoulder))) 
+                                    if left_wrist is not None and left_shoulder is not None else 0,
+        "right_wrist_shoulder_dist": float(np.linalg.norm(np.array(right_wrist)-np.array(right_shoulder))) 
+                                     if right_wrist is not None and right_shoulder is not None else 0,
     }
 
+def model_predict(model, mtype, features):
+    X = np.array([features], dtype=np.float32)
 
-def analyze_frame(frame):
-    results = yolo_model.predict(source=frame, imgsz=640, conf=0.25, device='cpu')
-    r = results[0]
-    if len(r.keypoints) == 0:
-        return None
+    # ✅ Automatic feature trimming/padding for sklearn models
+    if mtype == "sklearn":
+        expected = getattr(model, "n_features_in_", len(features))
 
-    kpts_array = r.keypoints.xy.cpu().numpy()
-    person_kpts = kpts_array[0]
-    features = extract_features_from_keypoints(person_kpts)
+        # If model expects fewer features → trim
+        if X.shape[1] > expected:
+            X = X[:, :expected]
 
-    features_df = pd.DataFrame([features], columns=feature_cols)
-    posture_pred = posture_model.predict(features_df)[0]
-    bodylang_pred = bodylang_model.predict(features_df)[0]
+        # If model expects more features → pad with zeros
+        elif X.shape[1] < expected:
+            diff = expected - X.shape[1]
+            X = np.hstack([X, np.zeros((1, diff))])
 
-    return {
-        "posture": posture_pred,
-        "body_language": bodylang_pred
-    }
+        try:
+            probs = model.predict_proba(X)[0]
+        except:
+            pred = model.predict(X)[0]
+            probs = np.zeros(len(POSTURE_CLASSES))
+            probs[pred] = 1
+        return probs
 
+    # ✅ Keras model (no trimming)
+    elif mtype == "keras":
+        return model.predict(X, verbose=0)[0]
+
+    return None
 
 @app.post("/analyze/")
 async def analyze(file: UploadFile):
-    suffix = os.path.splitext(file.filename)[-1] or ".mp4"
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        while True:
-            chunk = await file.read(1024 * 1024)
-            if not chunk:
-                break
-            tmp.write(chunk)
-        tmp.flush()
-        tmp_path = tmp.name
+    img_bytes = await file.read()
+    np_arr = np.frombuffer(img_bytes, np.uint8)
+    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
-    try:
-        if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
-            raise ValueError(f"Uploaded video file is empty: {tmp_path}")
+    results = yolo(frame)[0]
+    if results.keypoints is None:
+        return {"people": 0, "posture": {}, "body_language": {}}
 
-        cap = cv2.VideoCapture(tmp_path)
-        if not cap.isOpened():
-            raise ValueError(f"Failed to open video file: {tmp_path}")
+    kps = results.keypoints.xy.cpu().numpy()
 
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps == 0 or np.isnan(fps):
-            fps = 30
-        frame_interval = int(fps * 3000)  # one frame every 2 minutes-ish. Needs to be changed when the model is optimized.
+    person_postures = []
+    person_bodies = []
 
-        frame_idx = 0
-        frame_results = []
+    for kp in kps:
+        feats = extract_8_features_from_kps(kp)
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            if frame_idx % frame_interval == 0:
-                preds = analyze_frame(frame)
-                if preds:
-                    frame_results.append(preds)
-            frame_idx += 1
+        posture_probs = model_predict(posture_model, posture_type, list(feats.values()))
+        body_probs = model_predict(body_model, body_type, list(feats.values()))
 
-        cap.release()
-        if frame_results:
-            posture_modes = [r["posture"] for r in frame_results]
-            body_modes = [r["body_language"] for r in frame_results]
-            agg_posture = max(set(posture_modes), key=posture_modes.count)
-            agg_bodylang = max(set(body_modes), key=body_modes.count)
-        else:
-            return {"error": "No persons detected in any frames."}
+        posture_label = POSTURE_CLASSES[int(np.argmax(posture_probs))]
+        body_label = BODY_CLASSES[int(np.argmax(body_probs))]
 
-        output = {
-            "frames_analyzed": len(frame_results),
-            "frame_results": frame_results,
-            "aggregated_posture_bodylang": {
-                "posture": agg_posture,
-                "body_language": agg_bodylang
-            }
-        }
+        person_postures.append(posture_label)
+        person_bodies.append(body_label)
 
-        return output
+    def summarize(preds, class_list):
+        total = len(preds)
+        out = {}
+        for c in class_list:
+            if total == 0:
+                out[c] = 0.0
+            out[c] = round(preds.count(c)/total*100, 2)
+        return out
 
-    except Exception as e:
-        return {"error": str(e)}
-
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+    return {
+        "people": len(kps),
+        "posture_summary": summarize(person_postures, POSTURE_CLASSES),
+        "body_lang_summary": summarize(person_bodies, BODY_CLASSES),
+        "individual": [
+            {"posture": p, "body_language": b}
+            for p,b in zip(person_postures, person_bodies)
+        ]
+    }

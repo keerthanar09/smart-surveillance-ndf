@@ -1,21 +1,17 @@
-from fastapi import FastAPI, UploadFile, Form
+# orchestrator/app.py (complete replacement)
+from fastapi import FastAPI, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-import requests, numpy as np, cv2, os, json, time
+from fastapi.responses import StreamingResponse
+import cv2, os, json, asyncio
+import numpy as np
+import requests
 from datetime import datetime
-from graph_utils import generate_graphs 
-from gemini_api import analyze_with_gemini  
-# from email_utils import send_email_alert 
-from fastapi.staticfiles import StaticFiles
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import smtplib
+import tempfile
 
 app = FastAPI()
-
-# === Output folder setup ===
-outputs_path = os.path.join(os.path.dirname(__file__), "outputs")
-os.makedirs(outputs_path, exist_ok=True)
-
-app.mount("/outputs", StaticFiles(directory=outputs_path), name="outputs")
 
 app.add_middleware(
     CORSMiddleware,
@@ -24,142 +20,372 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# These URLs should point to your microservices, and will not be localhost if Docker is used!!!
-CROWD_URL = "http://127.0.0.1:8100/analyze/" 
-ENV_URL = "http://127.0.0.1:8200/analyze/"
+CROWD_URL = "http://127.0.0.1:8100/analyze/"
+ENV_URL   = "http://127.0.0.1:8200/analyze/"
 EMOTION_URL = "http://127.0.0.1:8300/analyze/"
 BODY_URL = "http://127.0.0.1:8400/analyze/"
+MIN_PEOPLE_FOR_ALERT = 30
 
-SENDER_EMAIL = "keerthana240904@gmail.com"
-SENDER_PASSWORD = "jlnq ffix tlhl ttvm"   # Use an app password, not your main password!
-AUTHORITY_EMAIL = "testusersneezy@gmail.com"
+from fastapi.staticfiles import StaticFiles
+app.mount("/outputs", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "outputs")), name="outputs")
 
-# create a different file for this util function later
-import smtplib
-def send_email_alert(subject, message):
+
+def encode_frame(frame):
+    _, buffer = cv2.imencode(".jpg", frame)
+    return buffer.tobytes()
+
+
+def send_email_with_frame(subject, message, frame_bytes):
+    msg = MIMEMultipart()
+    msg["From"] = "keerthana240904@gmail.com"
+    msg["To"] = "testusersneezy@gmail.com"
+    msg["Subject"] = subject
+    msg.attach(MIMEText(message, "plain"))
+
+    part = MIMEText(frame_bytes, "base64", "utf-8")
+    part.add_header("Content-Disposition", "attachment; filename=alert.jpg")
+    part.add_header("Content-Type", "image/jpeg")
+    msg.attach(part)
+
     try:
-        msg = MIMEMultipart()
-        msg["From"] = SENDER_EMAIL
-        msg["To"] = AUTHORITY_EMAIL
-        msg["Subject"] = subject
-        msg.attach(MIMEText(message, "plain"))
-
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        with smtplib.SMTP("smtp.gmail.com",587) as server:
             server.starttls()
-            server.login(SENDER_EMAIL, SENDER_PASSWORD)
-            server.send_message(msg)
-
-        print(f"Alert email sent to {AUTHORITY_EMAIL}")
+            # NOTE: keep secret credentials out of source in production
+            server.login("keerthana240904@gmail.com","jlnq ffix tlhl ttvm")
+            server.sendmail(msg["From"], msg["To"], msg.as_string())
     except Exception as e:
-        print(f"Failed to send alert email: {e}")
+        print("send_email_with_frame: email send failed:", str(e))
 
-def detect_anomalies(crowd_resp, env_resp, emotion_resp, posture_resp):
-    anomalies = []
-    alerts = []
 
-    # === Emotion anomalies ===
-    if "dominant_emotion" in emotion_resp:
-        dom_emotion = emotion_resp["dominant_emotion"].lower()
-        if dom_emotion in ["fear", "anger", "sad"]:
-            anomalies.append(f"Dominant emotion is {dom_emotion.upper()} — possible distress detected.")
-            alerts.append("⚠️ Emotional distress detected in crowd.")
+def normalize_crowd_response(crowd_resp):
+    """
+    Ensure the orchestrator always receives:
+      - overall_crowd_count (float)
+      - zones_summary (list of zones with avg_people etc)
+      - motion_anomaly and density_shift_anomaly defaulted if missing
+    Accept older analyzers returning 'zones' only.
+    """
+    if not isinstance(crowd_resp, dict):
+        return crowd_resp
 
-    # === Posture anomalies ===
-    if "aggregated_posture_bodylang" in posture_resp:
-        agg_posture = posture_resp["aggregated_posture_bodylang"].get("posture", "").lower()
-        body_lang = posture_resp["aggregated_posture_bodylang"].get("body_language", "").lower()
-        if "bent" in agg_posture or "collapsed" in agg_posture:
-            anomalies.append("Posture suggests leaning/bent position — potential fatigue or fear.")
-        if "gesturing" in body_lang or "raised" in body_lang:
-            anomalies.append("Frequent gesturing body language — possible agitation or warning signals.")
-            alerts.append("⚠️ Agitated behavior detected.")
-
-    # === Environment anomalies ===
-    if "aggregated_environment" in env_resp:
-        env = env_resp["aggregated_environment"]
-        if env.get("cleanliness") == "dirty" or env.get("lighting") == "dim":
-            anomalies.append("Poor environment detected — dirty or low lighting.")
-        if env.get("location") == "outdoor" and env.get("weather") in ["stormy", "rainy"]:
-            anomalies.append("Adverse weather conditions in outdoor scene.")
-
-    # === Crowd anomalies ===
-    if "crowd" in crowd_resp:
-        if isinstance(crowd_resp, dict) and "dominant_state" in crowd_resp:
-            if crowd_resp["dominant_state"] in ["chaotic", "panic"]:
-                anomalies.append("Crowd appears chaotic or panicked.")
-                alerts.append("🚨 Crowd panic detected.")
-        elif "error" in crowd_resp:
-            anomalies.append("Crowd analysis failed — unable to verify state.")
-
-    # === Fallback ===
-    if not anomalies:
-        anomalies.append("No anomalies detected.")
-    
-    return {"anomalies": anomalies, "alerts": alerts}
-
-@app.post("/process/")
-async def process(file: UploadFile, context: str = Form(...)):
-    contents = await file.read()
-    input_path = f"uploads/{int(time.time())}_{file.filename}"
-    os.makedirs("uploads", exist_ok=True)
-    with open(input_path, "wb") as f:
-        f.write(contents)
-
-    # This part will be replaced by something that hopefully maybe uses parallel processing (cuz currently its serial), and
-    # adding RL choose which services to call based on context!
-    with open(input_path, "rb") as f:
-        files = {"file": (file.filename, f, file.content_type)}
+    # If the analyzer returned zones but not aggregated_outputs, create them
+    if "zones" in crowd_resp and "aggregated_outputs" not in crowd_resp:
         try:
-            crowd_resp = requests.post(CROWD_URL, files=files, timeout=300).json()
-            f.seek(0)
-            environment_resp = requests.post(ENV_URL, files=files, timeout=300).json()
-            f.seek(0)
-            emotion_resp = requests.post(EMOTION_URL, files=files, timeout=300).json()
-            f.seek(0)
-            posture_resp = requests.post(BODY_URL, files=files, timeout=300).json()
+            agg = {z["id"]: {"avg_people": z.get("count", 0), "avg_density": z.get("density", 0), "dominant_state": z.get("state", "")} for z in crowd_resp.get("zones", [])}
+            crowd_resp["aggregated_outputs"] = [{"aggregate": agg}]
+        except Exception:
+            crowd_resp["aggregated_outputs"] = []
+
+    zones_summary = []
+    total_people = 0.0
+    agg_list = crowd_resp.get("aggregated_outputs") or []
+    if agg_list and isinstance(agg_list, list):
+        first = agg_list[0] or {}
+        aggregate = first.get("aggregate", {})
+        for zone_id, z in aggregate.items():
+            avg_people = float(z.get("avg_people", 0))
+            avg_density = float(z.get("avg_density", 0))
+            dominant_state = str(z.get("dominant_state", "")).lower()
+            dominant_insight = str(z.get("dominant_insight", "") if isinstance(z.get("dominant_insight", ""), str) else "")
+            zones_summary.append({
+                "id": zone_id,
+                "avg_people": avg_people,
+                "avg_density": avg_density,
+                "dominant_state": dominant_state,
+                "dominant_insight": dominant_insight
+            })
+            total_people += avg_people
+
+    # fallback: if zones present but aggregated_outputs empty, sum zone counts
+    if not zones_summary and "zones" in crowd_resp:
+        for z in crowd_resp.get("zones", []):
+            cnt = float(z.get("count", 0))
+            density = float(z.get("density", 0))
+            zones_summary.append({
+                "id": z.get("id"),
+                "avg_people": cnt,
+                "avg_density": density,
+                "dominant_state": str(z.get("state", "")).lower(),
+                "dominant_insight": ""
+            })
+            total_people += cnt
+
+    crowd_resp["overall_crowd_count"] = float(total_people)
+    crowd_resp["zones_summary"] = zones_summary
+    # decide dominant_state if not present
+    if "dominant_state" not in crowd_resp or not crowd_resp.get("dominant_state"):
+        if total_people >= 60:
+            crowd_resp["dominant_state"] = "extreme"
+        elif total_people >= 30:
+            crowd_resp["dominant_state"] = "high_density"
+        elif total_people >= 10:
+            crowd_resp["dominant_state"] = "moderate"
+        else:
+            crowd_resp["dominant_state"] = "calm"
+
+    if "motion_anomaly" not in crowd_resp:
+        crowd_resp["motion_anomaly"] = {"is_running": False, "avg_motion": 0.0, "anomaly_score": 0.0}
+    if "density_shift_anomaly" not in crowd_resp:
+        crowd_resp["density_shift_anomaly"] = {"is_anomaly": False, "score": 0.0}
+
+    return crowd_resp
 
 
-        except Exception as e:
-            # This needs to be updated cuz what is this logic tsk tsk tsk
-            crowd_resp = {"error": f"Crowd service failed: {e}"}
-            environment_resp = {"error": f"Environment service failed: {e}"}
-            emotion_resp = {"error": f"Emotion service failed: {e}"}
-            posture_resp = {"error": f"Posture service failed: {e}"}
-
-
-    combined_output = {
-        "timestamp": datetime.now().isoformat(),
-        "context": context,
-        "crowd": crowd_resp,
-        "environment": environment_resp,  
-        "emotion": emotion_resp,      
-        "posture": posture_resp,      
-    }
-    anomaly_results = detect_anomalies(crowd_resp, environment_resp, emotion_resp, posture_resp)
-    combined_output.update(anomaly_results)
-
-
-    json_path = f"outputs/result_{int(time.time())}.json"
-    with open(json_path, "w") as f:
-        json.dump(combined_output, f, indent=2)
+def analyze_frame_with_services(frame):
+    _, buffer = cv2.imencode(".jpg", frame)
+    files = {"file": ("frame.jpg", buffer.tobytes(), "image/jpeg")}
 
     try:
-        gemini_analysis = analyze_with_gemini(combined_output)
-        print(gemini_analysis)
+        crowd = requests.post(CROWD_URL, files=files, timeout=6).json()
     except Exception as e:
-        gemini_analysis = {"error": f"Gemini failed: {e}"}
+        crowd = {"error": str(e)}
 
-    graphs = generate_graphs(combined_output) 
-    
-    if anomaly_results["alerts"]:
-        alert_message = "\n".join(anomaly_results["alerts"] + anomaly_results["anomalies"])
-        send_email_alert("🚨 Smart Surveillance Alert Detected", alert_message)
+    try:
+        env = requests.post(ENV_URL, files=files, timeout=6).json()
+    except Exception as e:
+        env = {"error": str(e)}
+
+    try:
+        emo = requests.post(EMOTION_URL, files=files, timeout=6).json()
+    except Exception as e:
+        emo = {"error": str(e)}
+
+    try:
+        post = requests.post(BODY_URL, files=files, timeout=6).json()
+    except Exception as e:
+        post = {"error": str(e)}
+
+    try:
+        crowd = normalize_crowd_response(crowd)
+    except Exception:
+        crowd = crowd if isinstance(crowd, dict) else {"error": "invalid crowd response"}
+
+    posture_frame_results = []
+    if isinstance(post, dict) and "individual" in post:
+        for ind in post.get("individual", []):
+            posture_frame_results.append({
+                "posture": ind.get("posture"),
+                "body_language": ind.get("body_language")
+            })
 
     return {
-        "status": "success",
-        "context": context,
-        "results": combined_output,
-        "gemini": gemini_analysis,
-        "graphs": graphs,
+        "crowd": crowd,
+        "environment": env,
+        "emotion": emo,
+        "posture": {"frame_results": posture_frame_results},
+        "raw_posture": post
     }
 
+
+def detect_anomalies(crowd_resp, environment_resp, emotion_resp, posture_resp, crowd_history):
+    should_alert = False
+    reason_parts = []
+    anomalies = []
+
+    # --- Crowd / motion base ---
+    total_people = float(crowd_resp.get("overall_crowd_count", 0))
+    motion_info = crowd_resp.get("motion_anomaly", {}) or {}
+    motion = bool(motion_info.get("is_running", False))
+    motion_score = float(motion_info.get("anomaly_score", 0) or motion_info.get("avg_motion", 0))
+    density_shift = float(crowd_resp.get("density_shift_anomaly", {}).get("score", 0))
+    crowd_state = str(crowd_resp.get("dominant_state", "calm")).lower()
+
+    # Fill missing dominant_state in zones if empty
+    for z in crowd_resp.get("zones", []):
+        dens = z.get("density", 0)
+        if not z.get("dominant_state"):
+            if dens < 0.0005:
+                z["dominant_state"] = "low"
+            elif dens < 0.001:
+                z["dominant_state"] = "moderate"
+            elif dens < 0.002:
+                z["dominant_state"] = "high"
+            else:
+                z["dominant_state"] = "very_high"
+
+    # --- Emotion handling ---
+    dominant_emotion = (emotion_resp or {}).get("dominant_emotion")
+    positive_emotions = {"happy", "joy", "smile"}
+    negative_emotions = {"fear", "anger", "sad", "disgust", "surprise"}
+
+    emotion_missing = not dominant_emotion
+    is_positive = dominant_emotion and dominant_emotion.lower() in positive_emotions
+    is_negative = (not is_positive) and (dominant_emotion and dominant_emotion.lower() in negative_emotions)
+
+    # --- Posture / body-language anomaly check ---
+    posture_data = posture_resp.get("frame_results", [])
+    bent = sum(1 for p in posture_data if p.get("posture") in ("bent_forward", "crouching"))
+    aggressive = sum(1 for p in posture_data if p.get("body_language") == "aggressive")
+    gesturing = sum(1 for p in posture_data if p.get("body_language") == "gesturing")
+
+    posture_anomaly = bent >= 3 and total_people > 5
+    bodylang_anomaly = aggressive >= 2 or gesturing >= 4
+
+    # --- Historical trend ---
+    recent_counts = [c.get("overall_crowd_count", 0) for c in crowd_history if isinstance(c, dict)]
+    significant_increase = len(recent_counts) >= 3 and recent_counts[-1] > np.mean(recent_counts[-3:]) * 1.3
+
+    # === Alert logic ===
+    #  Crowd-level panic only when not happy
+    if not is_positive and (
+        motion
+        or motion_score > 1.2
+        or density_shift > 0.15
+        or crowd_state in ("high_density", "overcrowded")
+        or significant_increase
+    ):
+        should_alert = True
+        reason_parts.append("🚨 Crowd panic detected.")
+        anomalies.append("Crowd anomaly: unusual motion or density surge detected.")
+
+    #  Separate posture / body-language alerts
+    if posture_anomaly:
+        should_alert = True
+        reason_parts.append("⚠️ Posture anomaly detected.")
+        anomalies.append(f"{bent} people show bent/crouching posture (possible stress).")
+
+    if bodylang_anomaly:
+        should_alert = True
+        reason_parts.append("⚠️ Body-language anomaly detected.")
+        anomalies.append(f"{aggressive + gesturing} people show aggressive/gesturing behaviour.")
+
+    #  Suppress all if happy
+    if is_positive:
+        should_alert = False
+        reason_parts = [f"No alert — positive emotion ({dominant_emotion})."]
+        anomalies = []
+
+    # --- Environment summary ---
+    env_summary = (
+        f"Weather: {environment_resp.get('weather', 'unknown')}, "
+        f"Lighting: {environment_resp.get('lighting', 'unknown')}, "
+        f"Cleanliness: {environment_resp.get('cleanliness', 'unknown')}."
+    )
+
+    # --- Wellness score (smoothed) ---
+    stress_factor = (density_shift + motion_score) / 4.0
+    posture_factor = 0.2 if posture_anomaly else 0
+    bodylang_factor = 0.2 if bodylang_anomaly else 0
+    wellness_score = 1.0 if is_positive else max(0.2, 1.0 - stress_factor - posture_factor - bodylang_factor)
+
+    return {
+        "alert": should_alert,
+        "reason": " ".join(reason_parts) if reason_parts else "steady state",
+        "anomalies": anomalies,
+        "wellness_score": round(wellness_score, 2),
+        "environment_summary": env_summary,
+    }
+
+
+
+@app.post("/stream/")
+async def stream(file: UploadFile, context: str = Form(...), request: Request = None):
+    temp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    temp.write(await file.read())
+    temp.flush()
+    video_path = temp.name
+
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    frame_interval = max(1, int(fps * 1.5))  # sample roughly every 1.5 seconds for better responsiveness
+
+    HISTORY_LEN = 8
+    recent_crowd_history = []
+
+    async def event_stream():
+        frame_count = 0
+        anomalous_frame = None
+        accumulated = []
+
+        try:
+            while True:
+                if request is not None:
+                    try:
+                        if await request.is_disconnected():
+                            break
+                    except Exception:
+                        pass
+
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                if frame_count % frame_interval == 0:
+                    loop = asyncio.get_running_loop()
+                    results = await loop.run_in_executor(None, analyze_frame_with_services, frame)
+                    accumulated.append({"time": datetime.now().isoformat(), "results": results})
+
+                    # ensure crowd has overall_crowd_count
+                    crowd = results.get("crowd", {}) or {}
+                    if "overall_crowd_count" not in crowd or (isinstance(crowd.get("overall_crowd_count"), (int, float)) and crowd.get("overall_crowd_count") == 0 and crowd.get("zones")):
+                        # fallback: sum aggregated_outputs or zones
+                        try:
+                            total = 0.0
+                            for el in (crowd.get("aggregated_outputs") or []):
+                                agg = el.get("aggregate", {})
+                                for z in agg.values():
+                                    total += float(z.get("avg_people", 0))
+                            if total == 0.0 and crowd.get("zones"):
+                                for z in crowd.get("zones", []):
+                                    total += float(z.get("count", 0))
+                            crowd["overall_crowd_count"] = float(total)
+                        except Exception:
+                            crowd["overall_crowd_count"] = 0.0
+
+                    recent_crowd_history.append(crowd)
+                    if len(recent_crowd_history) > HISTORY_LEN:
+                        recent_crowd_history.pop(0)
+
+                    anomaly = detect_anomalies(
+                        crowd,
+                        results.get("environment", {}),
+                        results.get("emotion", {}),
+                        results.get("posture", {}),
+                        recent_crowd_history
+                    )
+
+                    payload = {
+                        "time": datetime.now().isoformat(),
+                        "context": context,
+                        "results": results,
+                        "alert": anomaly.get("alert", False),
+                        "reason": anomaly.get("reason", ""),
+                        "graphs": None,
+                        "gemini": None
+                    }
+
+                    # include anomaly metadata / wellness
+                    payload["anomaly_meta"] = anomaly
+
+                    if anomaly.get("alert", False):
+                        anomalous_frame = encode_frame(frame)
+                        try:
+                            send_email_with_frame(
+                                "🚨 Crowd Alert Detected",
+                                anomaly["reason"],
+                                anomalous_frame
+                            )
+                        except Exception as e:
+                            print("email send attempt failed:", str(e))
+                        payload["anomaly_frame"] = anomalous_frame.hex()
+
+                    yield f"data: {json.dumps(payload)}\n\n"
+
+                frame_count += 1
+                await asyncio.sleep(0.05)
+
+        except asyncio.CancelledError:
+            pass
+        finally:
+            try:
+                cap.release()
+            except Exception:
+                pass
+            try:
+                os.remove(video_path)
+            except Exception:
+                pass
+
+        yield f"data: {json.dumps({'done': True, 'frames_sent': frame_count, 'accumulated': accumulated})}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")

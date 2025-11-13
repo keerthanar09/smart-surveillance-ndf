@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+opencv-python
+numpy
+torch
+torchvision
+tensorflow
+keras
+pillow
+matplotlib
+python-multipart

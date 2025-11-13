@@ -1,178 +1,263 @@
-import cv2
-import json
-import joblib
-import numpy as np
-import tempfile
+# crowd_analyzer.py
 import os
-from collections import deque, Counter
-from ultralytics import YOLO
-from sklearn.cluster import DBSCAN
+import cv2
+import numpy as np
+import torch
 from fastapi import FastAPI, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-
-class CrowdAnalyser:
-    def __init__(self, grid_size=(4, 4), history=10):
-        self.model = YOLO("yolov8_mot20_best.pt")
-        self.grid_size = grid_size
-        self.classifier = joblib.load("zone_rf.pkl")
-        self.history_len = history
-        self.history = {
-            f"{chr(65+i)}{j+1}": deque(maxlen=history)
-            for i in range(grid_size[0]) for j in range(grid_size[1])
-        }
-
-    def divide_frame(self, frame):
-        h, w, _ = frame.shape
-        gh, gw = self.grid_size
-        sx, sy = w // gw, h // gh
-        zones = []
-        for i in range(gh):
-            for j in range(gw):
-                x1, y1, x2, y2 = j*sx, i*sy, (j+1)*sx, (i+1)*sy
-                zones.append(((x1, y1, x2, y2), f"{chr(65+i)}{j+1}"))
-        return zones
-
-    def extract_features(self, frame):
-        results = self.model(frame, verbose=False)
-        people = [box.xyxy[0].cpu().numpy() for box in results[0].boxes if int(box.cls[0]) == 0]
-        zones = self.divide_frame(frame)
-        feats = {}
-        for (x1, y1, x2, y2), name in zones:
-            zp = [p for p in people if x1 <= (p[0]+p[2])/2 <= x2 and y1 <= (p[1]+p[3])/2 <= y2]
-            n = len(zp)
-            d = n / ((x2-x1)*(y2-y1))
-            centroids = [((p[0]+p[2])/2, (p[1]+p[3])/2) for p in zp]
-            c = 0
-            if centroids:
-                clustering = DBSCAN(eps=40, min_samples=2).fit(np.array(centroids))
-                c = len(set(clustering.labels_)) - (1 if -1 in clustering.labels_ else 0)
-            feats[name] = [n, d, c]
-        return feats
-
-    def classify_zones(self, features):
-        json_out = {"zones": {}}
-        for z, fs in features.items():
-            pred = self.classifier.predict([fs])[0]
-            conf = max(self.classifier.predict_proba([fs])[0])
-            prev = self.history[z][-1] if len(self.history[z]) else None
-            insight = self.get_zone_insight(z, prev, fs, pred)
-            self.history[z].append({
-                "people": fs[0],
-                "density": fs[1],
-                "clusters": fs[2],
-                "state": pred,
-                "insight": insight
-            })
-            json_out["zones"][z] = {
-                "people": fs[0],
-                "density": fs[1],
-                "clusters": fs[2],
-                "state": pred,
-                "confidence": float(conf),
-                "insight": insight
-            }
-        return json_out
-
-    def get_zone_insight(self, zone, prev, fs, pred):
-        if not prev:
-            return "initial observation"
-        delta_people = fs[0] - prev["people"]
-        delta_density = fs[1] - prev["density"]
-        if delta_people > 3 or delta_density > 0.001:
-            return "crowd surge detected"
-        elif prev["state"] == "calm" and pred == "chaotic":
-            return "panic onset"
-        elif prev["state"] == "chaotic" and pred == "calm":
-            return "crowd calming"
-        elif abs(delta_people) < 1 and abs(delta_density) < 0.0001:
-            return "steady state"
-        else:
-            return "minor variation"
-
-    def aggregate_results(self, frames):
-        agg = {}
-        all_zones = frames[-1]["zones"].keys()
-        for z in all_zones:
-            people_vals = [f["zones"][z]["people"] for f in frames]
-            density_vals = [f["zones"][z]["density"] for f in frames]
-            cluster_vals = [f["zones"][z]["clusters"] for f in frames]
-            states = [f["zones"][z]["state"] for f in frames]
-            insights = [f["zones"][z]["insight"] for f in frames]
-
-            agg[z] = {
-                "avg_people": np.mean(people_vals),
-                "avg_density": np.mean(density_vals),
-                "avg_clusters": np.mean(cluster_vals),
-                "dominant_state": Counter(states).most_common(1)[0][0],
-                "dominant_insight": Counter(insights).most_common(1)[0][0]
-            }
-        return agg
-
-    def analyse_video(self, video_path):
-        """Main function to analyze a full video and return JSON results"""
-        cap = cv2.VideoCapture(video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30
-        frame_interval = int(fps)
-        frame_idx = 0
-        processed_frames = []
-        aggregated_outputs = []
-
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            if frame_idx % frame_interval == 0:
-                feats = self.extract_features(frame)
-                zones_json = self.classify_zones(feats)
-                processed_frames.append({"frame": frame_idx, "zones": zones_json["zones"]})
-
-                if len(processed_frames) % 10 == 0:
-                    agg = self.aggregate_results(processed_frames[-10:])
-                    aggregated_outputs.append({
-                        "frame_window": [processed_frames[-10]["frame"], frame_idx],
-                        "aggregate": agg,
-                    })
-                    print(f"Aggregated output for frames {processed_frames[-10]['frame']}–{frame_idx}")
-            frame_idx += 1
-
-        cap.release()
-
-        # Handle short videos (<10s)
-        if len(processed_frames) > 0 and len(processed_frames) % 10 != 0:
-            agg = self.aggregate_results(processed_frames[-(len(processed_frames) % 10):])
-            aggregated_outputs.append({
-                "frame_window": [processed_frames[0]["frame"], processed_frames[-1]["frame"]],
-                "aggregate": agg,
-            })
-            print(f"Final aggregated output for frames {processed_frames[0]['frame']}–{processed_frames[-1]['frame']}")
-
-        return {"aggregated_outputs": aggregated_outputs}
-
-
+from fastapi.staticfiles import StaticFiles
+from crowd_utils import MC_CNN
+import tempfile
 
 app = FastAPI(title="Crowd Analysis API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-analyzer = CrowdAnalyser()
+outputs_path = os.path.join(os.path.dirname(__file__), "outputs")
+os.makedirs(outputs_path, exist_ok=True)
+app.mount("/outputs", StaticFiles(directory=outputs_path), name="outputs")
+
+DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+CROWD_MODEL_PATH = os.path.join(os.path.dirname(__file__), "mccnn_crowd.pth")
+
+# ---- Tunable parameters ----
+GRID_SIZE = 4
+# motion thresholds (tuneable)
+MOTION_ZSCORE_THRESHOLD = 1.0   # z-score threshold (relative spike)
+MOTION_AVG_THRESHOLD = 1.2      # absolute avg motion threshold
+MIN_PEOPLE_FOR_ALERT = 3        # minimal people for an alert to be meaningful
+DENSITY_SHIFT_ALERT = 0.15      # density shift threshold that may trigger attention
+
+crowd_model = MC_CNN().to(DEVICE)
+crowd_model.load_state_dict(torch.load(CROWD_MODEL_PATH, map_location=DEVICE))
+crowd_model.eval()
+
+# Optical flow / motion history globals
+prev_gray = None
+motion_history = []
+MAX_MOTION_HISTORY = 12
+
+prev_density_zones = None
+avg_density = 0.0
+frame_counter = 0
+
+
+def compute_motion_anomaly(frame):
+    """
+    Compute dense optical flow between last saved gray frame and current.
+    Returns (avg_motion, anomaly_score), where anomaly_score is a z-score like metric.
+    """
+    global prev_gray, motion_history
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    if prev_gray is None:
+        prev_gray = gray
+        # initialize small history to avoid divide-by-zero later
+        motion_history = [0.0]
+        return 0.0, 0.0
+
+    # Farneback dense optical flow (fast and robust)
+    flow = cv2.calcOpticalFlowFarneback(prev_gray, gray, None,
+                                        pyr_scale=0.5, levels=3, winsize=15,
+                                        iterations=3, poly_n=5, poly_sigma=1.2, flags=0)
+    mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+    avg_motion = float(np.mean(mag))
+
+    # update history
+    motion_history.append(avg_motion)
+    if len(motion_history) > MAX_MOTION_HISTORY:
+        motion_history.pop(0)
+
+    mean_motion = float(np.mean(motion_history)) if motion_history else 0.0
+    std_motion = float(np.std(motion_history)) if motion_history else 0.0
+
+    if std_motion < 1e-6:
+        anomaly_score = 0.0
+    else:
+        anomaly_score = float((avg_motion - mean_motion) / (std_motion + 1e-6))
+
+    prev_gray = gray
+    return avg_motion, anomaly_score
+
+
+def dynamic_threshold(frame, total_count):
+    """Adjust thresholds dynamically based on frame area and rolling density average."""
+    global avg_density, frame_counter
+
+    frame_area = frame.shape[0] * frame.shape[1]
+    density_norm = total_count / (frame_area + 1e-6)
+
+    # Update running average
+    frame_counter += 1
+    avg_density = (avg_density * (frame_counter - 1) + density_norm) / frame_counter
+
+    # Dynamic scaling (kept simple)
+    density_thresh = max(0.00001, 0.00015 * (frame_area / (640 * 480)))
+    motion_thresh = MOTION_AVG_THRESHOLD * (1 + 0.5 * (density_norm / (avg_density + 1e-6)))
+
+    return density_thresh, motion_thresh
+
+
+def process_crowd_frame(frame, frame_idx, emotion_state=None):
+    """
+    Process a single frame: density map -> zones -> motion estimation -> anomaly scoring.
+    Returns a dictionary with:
+      - overall_crowd_count
+      - zones (list)
+      - aggregated_outputs (compatibility)
+      - density_shift_anomaly
+      - motion_anomaly (is_running, avg_motion, anomaly_score)
+      - combined_anomaly
+      - dominant_state, avg_density
+    """
+    global prev_density_zones
+
+    # compute density map via MC_CNN
+    img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    h, w = img.shape[:2]
+    h = (h // GRID_SIZE) * GRID_SIZE
+    w = (w // GRID_SIZE) * GRID_SIZE
+    img = cv2.resize(img, (w, h))
+
+    # prepare tensor for model
+    img_t = img.transpose((2, 0, 1))
+    tensor = torch.tensor(img_t / 255.0, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+
+    with torch.inference_mode():
+        density_map = crowd_model(tensor)
+        total_count = float(torch.sum(density_map))
+
+    dmap = density_map.squeeze().cpu().numpy()
+    H, W = dmap.shape
+    zH, zW = H // GRID_SIZE, W // GRID_SIZE
+
+    zones = []
+    current_zones = []
+
+    for r in range(GRID_SIZE):
+        for c in range(GRID_SIZE):
+            zone = dmap[r*zH:(r+1)*zH, c*zW:(c+1)*zW]
+            zone_count = float(np.sum(zone))
+            zone_density = zone_count / (zH * zW + 1e-6)
+            zones.append({"id": f"{r}_{c}", "count": zone_count, "density": zone_density})
+            current_zones.append(zone)
+
+    # density shift (between last frame zones and current)
+    density_shift = 0.0
+    if prev_density_zones is not None:
+        total_diff = sum(abs(np.sum(current_zones[i]) - np.sum(prev_density_zones[i])) for i in range(GRID_SIZE**2))
+        density_shift = float(total_diff / (GRID_SIZE**2))
+    prev_density_zones = current_zones
+
+    # average density across frame
+    frame_area = w * h
+    avg_density = total_count / (frame_area + 1e-6)
+
+    # dynamic thresholds
+    low_thr, motion_thresh = dynamic_threshold(frame, total_count)[0], dynamic_threshold(frame, total_count)[1]
+
+    # Basic density classification (kept conservative)
+    if avg_density < 0.00012:
+        dominant_state = "low_density"
+    elif avg_density < 0.00035:
+        dominant_state = "moderate"
+    elif avg_density < 0.0008:
+        dominant_state = "high_density"
+    else:
+        dominant_state = "overcrowded"
+
+    # Prevent false "chaotic" zones: very low people -> calm
+    if total_count < MIN_PEOPLE_FOR_ALERT:
+        dominant_state = "calm"
+
+    # compute motion anomaly using optical flow
+    avg_motion, motion_anomaly_score = compute_motion_anomaly(frame)
+
+    # Motion decisioning
+    is_running = (motion_anomaly_score > MOTION_ZSCORE_THRESHOLD) or (avg_motion > MOTION_AVG_THRESHOLD)
+    # also consider density shift as a complementary signal
+    is_density_spike = density_shift > DENSITY_SHIFT_ALERT
+
+    # emotion consideration
+    negative_emotions = {"fear", "anger", "sad", "disgust"}
+    is_negative_emotion = bool(emotion_state and str(emotion_state).lower() in negative_emotions)
+
+    # Combined anomaly heuristic
+    is_anomaly = False
+    reason = "steady state"
+
+    # If crowd gets overcrowded and motion or negative emotion -> panic
+    if dominant_state == "overcrowded" and (is_running or is_negative_emotion or is_density_spike):
+        is_anomaly = True
+        reason = "crowd panic detected"
+
+    # If sudden running with at least a few people -> surge/panic
+    elif is_running and (total_count >= MIN_PEOPLE_FOR_ALERT or is_density_spike):
+        is_anomaly = True
+        reason = "sudden running / surge detected"
+
+    # If density shift + moderate density -> possible unrest
+    elif is_density_spike and avg_density > 0.0002 and total_count >= MIN_PEOPLE_FOR_ALERT:
+        is_anomaly = True
+        reason = "sudden density shift detected"
+
+    # Build aggregated_outputs for orchestrator compatibility
+    aggregate = {
+        z["id"]: {
+            "avg_people": z["count"],
+            "avg_density": z["density"],
+            "dominant_state": dominant_state,
+            "dominant_insight": ""
+        }
+        for z in zones
+    }
+
+    total_people = float(sum(z["count"] for z in zones))
+
+    result = {
+        "frame": frame_idx,
+        "overall_crowd_count": float(total_people),
+        "zones": zones,
+        "aggregated_outputs": [{"aggregate": aggregate}],
+        "density_shift_anomaly": {"score": float(density_shift), "is_anomaly": bool(density_shift > DENSITY_SHIFT_ALERT)},
+        "motion_anomaly": {
+            "is_running": bool(is_running),
+            "avg_motion": float(avg_motion),
+            "anomaly_score": float(motion_anomaly_score)
+        },
+        "combined_anomaly": bool(is_anomaly),
+        "reason": reason or "steady state",
+        "dominant_state": dominant_state,
+        "avg_density": float(avg_density)
+    }
+
+    return result
+
+
+def compute_crowd_state(crowd_frames):
+    if not crowd_frames:
+        return "unknown"
+    counts = [c.get("overall_crowd_count", 0) for c in crowd_frames]
+    max_count = max(counts)
+    if max_count < 10:
+        return "low_density"
+    if max_count < 30:
+        return "moderate"
+    if max_count < 60:
+        return "high_density"
+    return "extreme"
+
 
 @app.post("/analyze/")
-async def analyze(file: UploadFile):
-    """Handles video upload and returns crowd analysis results."""
-    suffix = os.path.splitext(file.filename)[-1] or ".mp4"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        contents = await file.read()
-        tmp.write(contents)
-        tmp_path = tmp.name
-
-    try:
-        result = analyzer.analyse_video(tmp_path)
-        return result
-    finally:
-        os.remove(tmp_path)
+async def analyze_frame_api(file: UploadFile):
+    data = await file.read()
+    frame = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        return {"error": "failed to decode image"}
+    return process_crowd_frame(frame, 0)

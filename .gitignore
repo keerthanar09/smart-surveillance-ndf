@@ -8,3 +8,4 @@ logs/
 .DS_Store
 .ipynb_checkpoints
 orchestrator/uploads/
+crowd_service/crowd_venv/

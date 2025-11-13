@@ -58,13 +58,6 @@ def send_email_with_frame(subject, message, frame_bytes):
 
 
 def normalize_crowd_response(crowd_resp):
-    """
-    Ensure the orchestrator always receives:
-      - overall_crowd_count (float)
-      - zones_summary (list of zones with avg_people etc)
-      - motion_anomaly and density_shift_anomaly defaulted if missing
-    Accept older analyzers returning 'zones' only.
-    """
     if not isinstance(crowd_resp, dict):
         return crowd_resp
 
@@ -182,7 +175,6 @@ def detect_anomalies(crowd_resp, environment_resp, emotion_resp, posture_resp, c
     reason_parts = []
     anomalies = []
 
-    # --- Crowd / motion base ---
     total_people = float(crowd_resp.get("overall_crowd_count", 0))
     motion_info = crowd_resp.get("motion_anomaly", {}) or {}
     motion = bool(motion_info.get("is_running", False))
@@ -190,7 +182,6 @@ def detect_anomalies(crowd_resp, environment_resp, emotion_resp, posture_resp, c
     density_shift = float(crowd_resp.get("density_shift_anomaly", {}).get("score", 0))
     crowd_state = str(crowd_resp.get("dominant_state", "calm")).lower()
 
-    # Fill missing dominant_state in zones if empty
     for z in crowd_resp.get("zones", []):
         dens = z.get("density", 0)
         if not z.get("dominant_state"):
@@ -203,7 +194,6 @@ def detect_anomalies(crowd_resp, environment_resp, emotion_resp, posture_resp, c
             else:
                 z["dominant_state"] = "very_high"
 
-    # --- Emotion handling ---
     dominant_emotion = (emotion_resp or {}).get("dominant_emotion")
     positive_emotions = {"happy", "joy", "smile"}
     negative_emotions = {"fear", "anger", "sad", "disgust", "surprise"}
@@ -212,7 +202,6 @@ def detect_anomalies(crowd_resp, environment_resp, emotion_resp, posture_resp, c
     is_positive = dominant_emotion and dominant_emotion.lower() in positive_emotions
     is_negative = (not is_positive) and (dominant_emotion and dominant_emotion.lower() in negative_emotions)
 
-    # --- Posture / body-language anomaly check ---
     posture_data = posture_resp.get("frame_results", [])
     bent = sum(1 for p in posture_data if p.get("posture") in ("bent_forward", "crouching"))
     aggressive = sum(1 for p in posture_data if p.get("body_language") == "aggressive")
@@ -221,12 +210,9 @@ def detect_anomalies(crowd_resp, environment_resp, emotion_resp, posture_resp, c
     posture_anomaly = bent >= 3 and total_people > 5
     bodylang_anomaly = aggressive >= 2 or gesturing >= 4
 
-    # --- Historical trend ---
     recent_counts = [c.get("overall_crowd_count", 0) for c in crowd_history if isinstance(c, dict)]
     significant_increase = len(recent_counts) >= 3 and recent_counts[-1] > np.mean(recent_counts[-3:]) * 1.3
 
-    # === Alert logic ===
-    #  Crowd-level panic only when not happy
     if not is_positive and (
         motion
         or motion_score > 1.2
@@ -235,10 +221,9 @@ def detect_anomalies(crowd_resp, environment_resp, emotion_resp, posture_resp, c
         or significant_increase
     ):
         should_alert = True
-        reason_parts.append("🚨 Crowd panic detected.")
+        reason_parts.append("Crowd panic detected.")
         anomalies.append("Crowd anomaly: unusual motion or density surge detected.")
 
-    #  Separate posture / body-language alerts
     if posture_anomaly:
         should_alert = True
         reason_parts.append("⚠️ Posture anomaly detected.")
@@ -249,20 +234,17 @@ def detect_anomalies(crowd_resp, environment_resp, emotion_resp, posture_resp, c
         reason_parts.append("⚠️ Body-language anomaly detected.")
         anomalies.append(f"{aggressive + gesturing} people show aggressive/gesturing behaviour.")
 
-    #  Suppress all if happy
     if is_positive:
         should_alert = False
         reason_parts = [f"No alert — positive emotion ({dominant_emotion})."]
         anomalies = []
 
-    # --- Environment summary ---
     env_summary = (
         f"Weather: {environment_resp.get('weather', 'unknown')}, "
         f"Lighting: {environment_resp.get('lighting', 'unknown')}, "
         f"Cleanliness: {environment_resp.get('cleanliness', 'unknown')}."
     )
 
-    # --- Wellness score (smoothed) ---
     stress_factor = (density_shift + motion_score) / 4.0
     posture_factor = 0.2 if posture_anomaly else 0
     bodylang_factor = 0.2 if bodylang_anomaly else 0

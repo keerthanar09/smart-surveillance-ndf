@@ -1,4 +1,3 @@
-# crowd_analyzer.py
 import os
 import cv2
 import numpy as np
@@ -26,19 +25,16 @@ DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 
 CROWD_MODEL_PATH = os.path.join(os.path.dirname(__file__), "mccnn_crowd.pth")
 
-# ---- Tunable parameters ----
 GRID_SIZE = 4
-# motion thresholds (tuneable)
 MOTION_ZSCORE_THRESHOLD = 1.0   # z-score threshold (relative spike)
 MOTION_AVG_THRESHOLD = 1.2      # absolute avg motion threshold
-MIN_PEOPLE_FOR_ALERT = 3        # minimal people for an alert to be meaningful
-DENSITY_SHIFT_ALERT = 0.15      # density shift threshold that may trigger attention
+MIN_PEOPLE_FOR_ALERT = 3 
+DENSITY_SHIFT_ALERT = 0.15
 
 crowd_model = MC_CNN().to(DEVICE)
 crowd_model.load_state_dict(torch.load(CROWD_MODEL_PATH, map_location=DEVICE))
 crowd_model.eval()
 
-# Optical flow / motion history globals
 prev_gray = None
 motion_history = []
 MAX_MOTION_HISTORY = 12
@@ -49,27 +45,19 @@ frame_counter = 0
 
 
 def compute_motion_anomaly(frame):
-    """
-    Compute dense optical flow between last saved gray frame and current.
-    Returns (avg_motion, anomaly_score), where anomaly_score is a z-score like metric.
-    """
     global prev_gray, motion_history
-
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     if prev_gray is None:
         prev_gray = gray
-        # initialize small history to avoid divide-by-zero later
         motion_history = [0.0]
         return 0.0, 0.0
 
-    # Farneback dense optical flow (fast and robust)
     flow = cv2.calcOpticalFlowFarneback(prev_gray, gray, None,
                                         pyr_scale=0.5, levels=3, winsize=15,
                                         iterations=3, poly_n=5, poly_sigma=1.2, flags=0)
     mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
     avg_motion = float(np.mean(mag))
 
-    # update history
     motion_history.append(avg_motion)
     if len(motion_history) > MAX_MOTION_HISTORY:
         motion_history.pop(0)
@@ -87,17 +75,14 @@ def compute_motion_anomaly(frame):
 
 
 def dynamic_threshold(frame, total_count):
-    """Adjust thresholds dynamically based on frame area and rolling density average."""
     global avg_density, frame_counter
 
     frame_area = frame.shape[0] * frame.shape[1]
     density_norm = total_count / (frame_area + 1e-6)
 
-    # Update running average
     frame_counter += 1
     avg_density = (avg_density * (frame_counter - 1) + density_norm) / frame_counter
 
-    # Dynamic scaling (kept simple)
     density_thresh = max(0.00001, 0.00015 * (frame_area / (640 * 480)))
     motion_thresh = MOTION_AVG_THRESHOLD * (1 + 0.5 * (density_norm / (avg_density + 1e-6)))
 
@@ -105,27 +90,13 @@ def dynamic_threshold(frame, total_count):
 
 
 def process_crowd_frame(frame, frame_idx, emotion_state=None):
-    """
-    Process a single frame: density map -> zones -> motion estimation -> anomaly scoring.
-    Returns a dictionary with:
-      - overall_crowd_count
-      - zones (list)
-      - aggregated_outputs (compatibility)
-      - density_shift_anomaly
-      - motion_anomaly (is_running, avg_motion, anomaly_score)
-      - combined_anomaly
-      - dominant_state, avg_density
-    """
     global prev_density_zones
-
-    # compute density map via MC_CNN
     img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     h, w = img.shape[:2]
     h = (h // GRID_SIZE) * GRID_SIZE
     w = (w // GRID_SIZE) * GRID_SIZE
     img = cv2.resize(img, (w, h))
 
-    # prepare tensor for model
     img_t = img.transpose((2, 0, 1))
     tensor = torch.tensor(img_t / 255.0, dtype=torch.float32).unsqueeze(0).to(DEVICE)
 
@@ -148,21 +119,16 @@ def process_crowd_frame(frame, frame_idx, emotion_state=None):
             zones.append({"id": f"{r}_{c}", "count": zone_count, "density": zone_density})
             current_zones.append(zone)
 
-    # density shift (between last frame zones and current)
     density_shift = 0.0
     if prev_density_zones is not None:
         total_diff = sum(abs(np.sum(current_zones[i]) - np.sum(prev_density_zones[i])) for i in range(GRID_SIZE**2))
         density_shift = float(total_diff / (GRID_SIZE**2))
     prev_density_zones = current_zones
 
-    # average density across frame
     frame_area = w * h
     avg_density = total_count / (frame_area + 1e-6)
-
-    # dynamic thresholds
     low_thr, motion_thresh = dynamic_threshold(frame, total_count)[0], dynamic_threshold(frame, total_count)[1]
 
-    # Basic density classification (kept conservative)
     if avg_density < 0.00012:
         dominant_state = "low_density"
     elif avg_density < 0.00035:
@@ -172,42 +138,31 @@ def process_crowd_frame(frame, frame_idx, emotion_state=None):
     else:
         dominant_state = "overcrowded"
 
-    # Prevent false "chaotic" zones: very low people -> calm
     if total_count < MIN_PEOPLE_FOR_ALERT:
         dominant_state = "calm"
 
-    # compute motion anomaly using optical flow
     avg_motion, motion_anomaly_score = compute_motion_anomaly(frame)
 
-    # Motion decisioning
     is_running = (motion_anomaly_score > MOTION_ZSCORE_THRESHOLD) or (avg_motion > MOTION_AVG_THRESHOLD)
-    # also consider density shift as a complementary signal
     is_density_spike = density_shift > DENSITY_SHIFT_ALERT
-
-    # emotion consideration
     negative_emotions = {"fear", "anger", "sad", "disgust"}
     is_negative_emotion = bool(emotion_state and str(emotion_state).lower() in negative_emotions)
 
-    # Combined anomaly heuristic
     is_anomaly = False
     reason = "steady state"
 
-    # If crowd gets overcrowded and motion or negative emotion -> panic
     if dominant_state == "overcrowded" and (is_running or is_negative_emotion or is_density_spike):
         is_anomaly = True
         reason = "crowd panic detected"
 
-    # If sudden running with at least a few people -> surge/panic
     elif is_running and (total_count >= MIN_PEOPLE_FOR_ALERT or is_density_spike):
         is_anomaly = True
         reason = "sudden running / surge detected"
 
-    # If density shift + moderate density -> possible unrest
     elif is_density_spike and avg_density > 0.0002 and total_count >= MIN_PEOPLE_FOR_ALERT:
         is_anomaly = True
         reason = "sudden density shift detected"
 
-    # Build aggregated_outputs for orchestrator compatibility
     aggregate = {
         z["id"]: {
             "avg_people": z["count"],

@@ -4,7 +4,7 @@ import InfoTooltip from "./InfoToolTip";
 
 export default function StressTrend({ stressHistory }) {
   const data = stressHistory.map((v, i) => ({ index: i + 1, stress: v }));
-  console.log("StressTrend rendering", stressHistory);
+  // console.log("StressTrend rendering", stressHistory);
 
 
   return (

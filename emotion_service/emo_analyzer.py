@@ -15,16 +15,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ================================
-# Load model once
-# ================================
-MODEL_PATH = "./emomodel.keras"
-emotion_model = load_model(MODEL_PATH)
+
+MODEL_PATH = "./emomodel.hdf5"
+emotion_model = load_model(MODEL_PATH, compile=False)
 
 emotion_labels = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']
-picture_size = 48
+picture_size = 64
 
-# Haar Cascade for face detection
 face_detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
 
@@ -34,13 +31,12 @@ def bytes_to_cv2_image(b: bytes):
 
 
 def predict_single_face(gray_crop):
-    """Predicts using the emotion model and returns numpy preds + percentage mappings."""
-    resized = cv2.resize(gray_crop, (picture_size, picture_size))
-    img_arr = img_to_array(resized)
-    img_arr = np.expand_dims(img_arr, axis=0)
-    img_arr = img_arr / 255.0
+    resized = cv2.resize(gray_crop, (64, 64))
+    resized = resized.astype("float32") / 255.0
+    resized = np.expand_dims(resized, axis=-1)
+    resized = np.expand_dims(resized, axis=0)
 
-    preds = emotion_model.predict(img_arr, verbose=0)[0]
+    preds = emotion_model.predict(resized, verbose=0)[0]
 
     percentages = {
         emotion_labels[i]: f"{float(preds[i]) * 100:.2f}%"
@@ -48,6 +44,7 @@ def predict_single_face(gray_crop):
     }
 
     return preds, percentages
+
 
 
 @app.post("/analyze/")
@@ -60,7 +57,6 @@ async def analyze_emotions(file: UploadFile):
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    # Detect faces
     faces = face_detector.detectMultiScale(gray, 1.1, 5, minSize=(30, 30))
     total_faces = len(faces)
 
@@ -72,34 +68,22 @@ async def analyze_emotions(file: UploadFile):
             "dominant_emotion": None,
         }
 
-    # Accumulate scores
-    accumulated = [0.0] * len(emotion_labels)
-
+    accumulated = np.zeros(len(emotion_labels), dtype=float)
     for (x, y, w, h) in faces:
-        face_crop = gray[y:y + h, x:x + w]
+        face_crop = gray[y:y+h, x:x+w]
+
+        if face_crop.size == 0:
+            continue
+
         preds, _ = predict_single_face(face_crop)
+        accumulated += preds
+    avg_scores = accumulated / total_faces
 
-        # Convert numpy → Python float
-        for i in range(len(accumulated)):
-            accumulated[i] += float(preds[i])
-
-    avg_scores = [acc / total_faces for acc in accumulated]
-
-    # ✅ REMOVE ANGRY from distribution
     emotion_distribution = {
-        emotion_labels[i]: float(avg_scores[i]*100)
+        emotion_labels[i]: float(avg_scores[i]) * 100.0
         for i in range(len(emotion_labels))
-        if emotion_labels[i] != "angry"
     }
-
-    # ✅ REMOVE ANGRY from dominant emotion
-    filtered_scores = {
-        emotion_labels[i]: float(avg_scores[i]*100)
-        for i in range(len(emotion_labels))
-        if emotion_labels[i] != "angry"
-    }
-
-    dominant = max(filtered_scores, key=filtered_scores.get) if filtered_scores else None
+    dominant = max(emotion_distribution, key=emotion_distribution.get)
 
     return {
         "frames_analyzed": 1,

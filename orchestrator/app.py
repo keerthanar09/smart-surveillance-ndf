@@ -1,4 +1,3 @@
-# orchestrator/app.py (complete replacement)
 from fastapi import FastAPI, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -50,7 +49,6 @@ def send_email_with_frame(subject, message, frame_bytes):
     try:
         with smtplib.SMTP("smtp.gmail.com",587) as server:
             server.starttls()
-            # NOTE: keep secret credentials out of source in production
             server.login("keerthana240904@gmail.com","jlnq ffix tlhl ttvm")
             server.sendmail(msg["From"], msg["To"], msg.as_string())
     except Exception as e:
@@ -61,7 +59,6 @@ def normalize_crowd_response(crowd_resp):
     if not isinstance(crowd_resp, dict):
         return crowd_resp
 
-    # If the analyzer returned zones but not aggregated_outputs, create them
     if "zones" in crowd_resp and "aggregated_outputs" not in crowd_resp:
         try:
             agg = {z["id"]: {"avg_people": z.get("count", 0), "avg_density": z.get("density", 0), "dominant_state": z.get("state", "")} for z in crowd_resp.get("zones", [])}
@@ -89,7 +86,6 @@ def normalize_crowd_response(crowd_resp):
             })
             total_people += avg_people
 
-    # fallback: if zones present but aggregated_outputs empty, sum zone counts
     if not zones_summary and "zones" in crowd_resp:
         for z in crowd_resp.get("zones", []):
             cnt = float(z.get("count", 0))
@@ -105,7 +101,6 @@ def normalize_crowd_response(crowd_resp):
 
     crowd_resp["overall_crowd_count"] = float(total_people)
     crowd_resp["zones_summary"] = zones_summary
-    # decide dominant_state if not present
     if "dominant_state" not in crowd_resp or not crowd_resp.get("dominant_state"):
         if total_people >= 60:
             crowd_resp["dominant_state"] = "extreme"
@@ -195,15 +190,15 @@ def detect_anomalies(crowd_resp, environment_resp, emotion_resp, posture_resp, c
                 z["dominant_state"] = "very_high"
 
     dominant_emotion = (emotion_resp or {}).get("dominant_emotion")
-    positive_emotions = {"happy", "joy", "smile"}
-    negative_emotions = {"fear", "anger", "sad", "disgust", "surprise"}
+    positive_emotions = {"happy", "joy", "smile", "surprise"}
+    negative_emotions = {"fear", "anger", "sad", "disgust"}
 
     emotion_missing = not dominant_emotion
     is_positive = dominant_emotion and dominant_emotion.lower() in positive_emotions
-    is_negative = (not is_positive) and (dominant_emotion and dominant_emotion.lower() in negative_emotions)
+    # is_negative = (not is_positive) and (dominant_emotion and dominant_emotion.lower() in negative_emotions)
 
     posture_data = posture_resp.get("frame_results", [])
-    bent = sum(1 for p in posture_data if p.get("posture") in ("bent_forward", "crouching"))
+    bent = sum(1 for p in posture_data if p.get("posture") in ("crouching"))
     aggressive = sum(1 for p in posture_data if p.get("body_language") == "aggressive")
     gesturing = sum(1 for p in posture_data if p.get("body_language") == "gesturing")
 
@@ -226,12 +221,12 @@ def detect_anomalies(crowd_resp, environment_resp, emotion_resp, posture_resp, c
 
     if posture_anomaly:
         should_alert = True
-        reason_parts.append("⚠️ Posture anomaly detected.")
-        anomalies.append(f"{bent} people show bent/crouching posture (possible stress).")
+        reason_parts.append(f"⚠️ Posture anomaly detected, {bent} people crouching.")
+        anomalies.append(f"{bent} people show crouching posture (possible stress).")
 
     if bodylang_anomaly:
         should_alert = True
-        reason_parts.append("⚠️ Body-language anomaly detected.")
+        reason_parts.append(f"⚠️ Body-language anomaly detected. {aggressive + gesturing} people showing possible agressive behaviour.")
         anomalies.append(f"{aggressive + gesturing} people show aggressive/gesturing behaviour.")
 
     if is_positive:
@@ -269,7 +264,7 @@ async def stream(file: UploadFile, context: str = Form(...), request: Request = 
 
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
-    frame_interval = max(1, int(fps * 1.5))  # sample roughly every 1.5 seconds for better responsiveness
+    frame_interval = max(1, int(fps * 1.5)) 
 
     HISTORY_LEN = 8
     recent_crowd_history = []

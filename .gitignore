@@ -9,3 +9,7 @@ logs/
 .ipynb_checkpoints
 orchestrator/uploads/
 crowd_service/crowd_venv/
+newvenv/
+emotion_service/emovenv/
+emotion_service/emovenv1/
+body_service/bodvenv/

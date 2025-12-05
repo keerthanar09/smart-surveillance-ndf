@@ -1,4 +1,3 @@
-# posture_service/app.py
 import os
 import cv2
 import json

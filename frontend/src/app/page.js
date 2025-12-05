@@ -21,7 +21,8 @@ export default function Home() {
   const videoRef = useRef(null);
   const controllerRef = useRef(null);
 
-  // 🔹 Handle Submit and Stream Data
+  const lastPeopleRef = useRef(0);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!file || !context) {
@@ -33,7 +34,6 @@ export default function Home() {
     formData.append("file", file);
     formData.append("context", context);
 
-    // Play uploaded video
     if (videoRef.current) {
       const url = URL.createObjectURL(file);
       videoRef.current.src = url;
@@ -79,6 +79,7 @@ export default function Home() {
               setAnomaly({ visible: true, reason });
               speechSynthesis.speak(new SpeechSynthesisUtterance(reason));
               setTimeout(() => setAnomaly({ visible: false, reason: "" }), 8000);
+              console.log("Anomaly detected:", reason);
             }
           } catch (err) {
             console.error("Failed to parse stream JSON:", err);
@@ -95,7 +96,6 @@ export default function Home() {
     }
   };
 
-  // 🔹 Process result and update graphs
   useEffect(() => {
     if (!result) return;
 
@@ -103,13 +103,43 @@ export default function Home() {
     const fear = Number(emoDist.fear ?? 0);
     const sad = Number(emoDist.sad ?? 0);
     const disgust = Number(emoDist.disgust ?? 0);
-    const stress = Math.min(100, fear * 0.6 + sad * 0.3 + disgust * 0.1);
+    const anger = Number(emoDist.anger ?? 0);
+
+    const hasNegativeEmotions =
+      fear > 0 || sad > 0 || disgust > 0 || anger > 0;
+
+    let stress = 0;
+    const crowd = result?.results?.crowd || {};
+
+    if (hasNegativeEmotions) {
+      stress = Math.min(
+        100,
+        anger * 0.4 + fear * 0.3 + sad * 0.2 + disgust * 0.1
+      );
+    } else{
+      const panic = crowd.panic_detected ? 1 : 0;
+      const anomalyFlag = result?.alert ? 1 : 0;
+
+      const suddenChange =
+        Math.abs(
+          (crowd.overall_crowd_count ?? 0) - lastPeopleRef.current
+        ) > 10
+          ? 1
+          : 0;
+
+      stress = Math.min(100, panic * 70 + suddenChange * 40 + anomalyFlag * 80);
+    }
+
+    console.log("Calculated stress:", stress);
     setStressHistory((prev) => [...prev.slice(-19), stress]);
 
-    const crowd = result?.results?.crowd || {};
-    const avgPeople = crowd.overall_crowd_count ?? 0;
-    setPeopleHistory((prev) => [...prev.slice(-19), avgPeople]);
+    const avgPeople = Math.floor(crowd.overall_crowd_count ?? 0);
 
+    setPeopleHistory((prev) => {
+      const newHist = [...prev.slice(-19), avgPeople];
+      return newHist;
+    });
+    lastPeopleRef.current = avgPeople;
     const anomaly_meta = result?.anomaly_meta;
     if (anomaly_meta?.wellness_score !== undefined)
       setWellbeing(Math.round(anomaly_meta.wellness_score * 100));
@@ -118,10 +148,9 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-black text-white p-8 flex justify-center">
       <div className="max-w-7xl w-full grid grid-cols-2 gap-8">
-        {/* Left: Form + Video */}
         <div className="flex flex-col gap-6">
           <h1 className="text-3xl font-bold mb-2 text-white">
-            Smart Surveillance Quick Run
+            Smart Surveillance System Demo
           </h1>
           <AnalyzeForm
             file={file}
@@ -134,7 +163,6 @@ export default function Home() {
           <VideoPlayer videoRef={videoRef} anomaly={anomaly} />
         </div>
 
-        {/* Right: Analysis */}
         {result && (
           <div className="flex flex-col gap-6">
             <WellbeingMeter

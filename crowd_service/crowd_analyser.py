@@ -26,8 +26,8 @@ DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 CROWD_MODEL_PATH = os.path.join(os.path.dirname(__file__), "mccnn_crowd.pth")
 
 GRID_SIZE = 4
-MOTION_ZSCORE_THRESHOLD = 1.0   # z-score threshold (relative spike)
-MOTION_AVG_THRESHOLD = 1.2      # absolute avg motion threshold
+MOTION_ZSCORE_THRESHOLD = 1.0 
+MOTION_AVG_THRESHOLD = 1.2
 MIN_PEOPLE_FOR_ALERT = 3 
 DENSITY_SHIFT_ALERT = 0.15
 

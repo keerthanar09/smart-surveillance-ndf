@@ -26,38 +26,42 @@ npm run dev
 ```
 This command is for production. Otherwise, run `npm start`.
 
-4) Now, we need to run each of the services. The plan is to dockerize each service and use them as a microservice, but since this system is still being developed, docker hasn't been used yet. So each service will be individually run as follows (open a new terminal for each service):
+4) Create python virtual environment for the entire project, body_service, crowd_service and emotion_service, and install the necessary requirements for each service, provided in a `requirements.txt` file within each respective folder.
+
+(**Important Note to Self:** MAKE NOTE OF DEPENDANCIES FOR EVERY SERVICE AND ONLY KEEP SEPARATE VIRTUAL ENVIRONMENTS IF ABSOLUTELY NECESSARY. RIGHT NOW THE MULTIPLE VIRTUAL ENVIRONMENTS ARE TEMPORARY FOR EASE OF DEVELOPMENT.)
+
+5) Now, we need to run each of the services. The plan is to dockerize each service and use them as a microservice, but since this system is still being developed, docker hasn't been used yet. So each service will be individually run as follows (open a new terminal for each service):
 
 ```
 //Terminal 2
 cd crowd_service
+crowd_venv\Scripts\activate
 uvicorn crowd_analyser:app --host 127.0.0.1 --port 8100   
 
 //Terminal 3
+venv\Scripts\activate
 cd orchestrator
 uvicorn app:app --host 127.0.0.1 --port 8000 --reload   
 
 //Terminal 4
+venv\Scripts\activate
 cd env_service
 uvicorn envir_analyzer:app --host 127.0.0.1 --port 8200 --reload       
 
 //Terminal 5
 cd emotion_service
+emovenv\Scripts\activate
 uvicorn emo_analyzer:app --host 127.0.0.1 --port 8300 --reload      
 
 //Terminal 6
 cd body_service
+bodvenv\Scripts\activate
+uvicorn body_analyzer:app --host 127.0.0.1 --port 8400 --reload      
 
 ```
 
 *Note: This set-up is purely for development purposes.*
 
-5) Create a `.env` file in the project root and add a variable named `GEMINI_API_KEY`, and provide your API key as it's value. This API key can be obtained from [Google Cloud Console](https://console.cloud.google.com/). Enable *Gemini API* and create an API key under **API and Credentials**
+5) Create a `.env` file in the project root and add a variable named `GEMINI_API_KEY`, and provide your API key as it's value. This API key can be obtained from [Google Cloud Console](https://console.cloud.google.com/). Enable *Gemini API* and create an API key under **API and Credentials**. *Future me: Removed gemini API temporarily since the performance overhead is more than desired. But, planning to add it later again for weekly or monthly reports.*
 
-## Project Structure
-
-## Features
-
-## Collaborators and Contacts
-
-## Relevant Links
+*For more details on the project, refer to report.pdf present in this folder.*

@@ -292,10 +292,8 @@ async def stream(file: UploadFile, context: str = Form(...), request: Request = 
                     results = await loop.run_in_executor(None, analyze_frame_with_services, frame)
                     accumulated.append({"time": datetime.now().isoformat(), "results": results})
 
-                    # ensure crowd has overall_crowd_count
                     crowd = results.get("crowd", {}) or {}
                     if "overall_crowd_count" not in crowd or (isinstance(crowd.get("overall_crowd_count"), (int, float)) and crowd.get("overall_crowd_count") == 0 and crowd.get("zones")):
-                        # fallback: sum aggregated_outputs or zones
                         try:
                             total = 0.0
                             for el in (crowd.get("aggregated_outputs") or []):

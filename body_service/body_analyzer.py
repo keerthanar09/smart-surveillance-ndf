@@ -109,16 +109,11 @@ def extract_8_features_from_kps(kps):
 
 def model_predict(model, mtype, features):
     X = np.array([features], dtype=np.float32)
-
-    # ✅ Automatic feature trimming/padding for sklearn models
     if mtype == "sklearn":
         expected = getattr(model, "n_features_in_", len(features))
-
-        # If model expects fewer features → trim
         if X.shape[1] > expected:
             X = X[:, :expected]
 
-        # If model expects more features → pad with zeros
         elif X.shape[1] < expected:
             diff = expected - X.shape[1]
             X = np.hstack([X, np.zeros((1, diff))])
@@ -130,8 +125,6 @@ def model_predict(model, mtype, features):
             probs = np.zeros(len(POSTURE_CLASSES))
             probs[pred] = 1
         return probs
-
-    # ✅ Keras model (no trimming)
     elif mtype == "keras":
         return model.predict(X, verbose=0)[0]
 

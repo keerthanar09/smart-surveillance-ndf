@@ -21,7 +21,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ Updated feature definitions (same as your Colab training code)
 features = {
     "weather": ["sunny", "rainy", "snowy", "cloudy"],
     "lighting": ["day", "night", "dim", "bright", "dark"],
@@ -29,13 +28,9 @@ features = {
     "cleanliness": ["clean", "messy"]
 }
 
-# ✅ Load ResNet50 backbone dimension
 base_model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V2)
 num_features = base_model.fc.in_features
 
-
-
-# ✅ Multi-head model (same architecture as Colab)
 class MultiFeatureModel(nn.Module):
     def __init__(self, backbone, features):
         super().__init__()
@@ -52,7 +47,6 @@ class MultiFeatureModel(nn.Module):
         return out
 
 
-# ✅ Load model for inference
 model = MultiFeatureModel(base_model, features)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -61,7 +55,6 @@ state = torch.load(model_path, map_location="cpu")
 model.load_state_dict(state)
 model.eval()
 
-# ✅ Inference transforms (same as your validation transform)
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),

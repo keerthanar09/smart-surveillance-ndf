@@ -13,3 +13,5 @@ newvenv/
 emotion_service/emovenv/
 emotion_service/emovenv1/
 body_service/bodvenv/
+body_service/bodyvenv/
+package-lock.json

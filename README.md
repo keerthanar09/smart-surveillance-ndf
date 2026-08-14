@@ -28,7 +28,23 @@ This command is for production. Otherwise, run `npm start`.
 
 4) Create python virtual environment for the entire project, body_service, crowd_service and emotion_service, and install the necessary requirements for each service, provided in a `requirements.txt` file within each respective folder.
 
-(**Important Note to Self:** MAKE NOTE OF DEPENDANCIES FOR EVERY SERVICE AND ONLY KEEP SEPARATE VIRTUAL ENVIRONMENTS IF ABSOLUTELY NECESSARY. RIGHT NOW THE MULTIPLE VIRTUAL ENVIRONMENTS ARE TEMPORARY FOR EASE OF DEVELOPMENT.)
+```
+# New terminal at root of project directory (at smart-surveillance-ndf)
+py -3.11 -m venv venv
+venv/Scripts/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+
+# Terminal 2
+cd crowd_service
+py -3.11 -m venv crowd_venv
+crowd_venv\Scripts\activate
+pip install -r requirements.txt
+
+# Do the same as above for the body_service and emotion_service.
+
+```
+
 
 5) Now, we need to run each of the services. The plan is to dockerize each service and use them as a microservice, but since this system is still being developed, docker hasn't been used yet. So each service will be individually run as follows (open a new terminal for each service):
 
@@ -55,7 +71,7 @@ uvicorn emo_analyzer:app --host 127.0.0.1 --port 8300 --reload
 
 //Terminal 6
 cd body_service
-bodvenv\Scripts\activate
+bodyvenv\Scripts\activate
 uvicorn body_analyzer:app --host 127.0.0.1 --port 8400 --reload      
 
 ```
